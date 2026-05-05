@@ -27,6 +27,13 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "windows",
+    constraint_values = [
+        "@platforms//os:windows",
+    ],
+)
+
 filegroup(
     name = "shader_files",
     srcs = [
@@ -57,10 +64,14 @@ cc_binary(
     name = "cpp_segmentation_cpu",
     srcs = [
         "main_cpu.cc",
+        "gl_compat.h",
     ],
     copts = [
         "-I.",
-    ],
+    ] + select({
+        ":windows": ["-DLITERT_USE_OPENGL=0"],
+        "//conditions:default": ["-DLITERT_USE_OPENGL=1"],
+    }),
     data = [
         ":model_files",
         ":shader_files",
@@ -96,6 +107,10 @@ cc_binary(
         # copybara:uncomment "//litert/runtime/accelerators/gpu:ml_drift_cl_accelerator_so",
     ],
     linkopts = litert_android_linkopts() + gles_linkopts(),
+    target_compatible_with = select({
+        ":windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":image_processor",
         ":image_utils",
@@ -132,6 +147,10 @@ cc_binary(
         "@qairt//:lib/hexagon-v79/unsigned/libQnnHtpV79Skel.so",
     ],
     linkopts = gles_linkopts(),
+    target_compatible_with = select({
+        ":windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":image_processor",
         ":image_utils",
@@ -163,6 +182,10 @@ cc_binary(
         "@litert_archive//litert/vendors/mediatek/compiler:compiler_plugin_so",  # libLiteRtCompilerPlugin_MediaTek.so
     ],
     linkopts = gles_linkopts(),
+    target_compatible_with = select({
+        ":windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":image_processor",
         ":image_utils",
@@ -188,7 +211,14 @@ cc_library(
 cc_library(
     name = "image_processor",
     srcs = ["image_processor.cc"],
-    hdrs = ["image_processor.h"],
+    hdrs = [
+        "image_processor.h",
+        "gl_compat.h",
+    ],
+    copts = select({
+        ":windows": ["-DLITERT_USE_OPENGL=0"],
+        "//conditions:default": ["-DLITERT_USE_OPENGL=1"],
+    }),
     linkopts = gles_linkopts(),
     deps = [
         ":image_utils",

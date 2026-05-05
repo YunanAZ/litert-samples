@@ -22,10 +22,7 @@
 #include <string>
 #include <vector>
 
-// EGL
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <GLES3/gl3.h>
+#include "compiled_model_api/image_segmentation/c++_segmentation/build_from_source/gl_compat.h"
 #include "compiled_model_api/image_segmentation/c++_segmentation/build_from_source/image_utils.h"
 
 class ImageProcessor {
@@ -79,6 +76,7 @@ class ImageProcessor {
                          std::vector<GLuint>& output_buffer_ids);
 
  private:
+#if LITERT_USE_OPENGL
   EGLDisplay egl_display_ = EGL_NO_DISPLAY;
   EGLSurface egl_surface_ = EGL_NO_SURFACE;
   EGLContext egl_context_ = EGL_NO_CONTEXT;
@@ -95,6 +93,23 @@ class ImageProcessor {
 
   bool SetupComputeShader(const std::string& compute_shader_path,
                           GLuint& program_id);
+#endif
+
+  // CPU Fallback data storage
+  struct CpuTexture {
+    std::vector<unsigned char> data_uchar;
+    std::vector<float> data_float;
+    int width;
+    int height;
+    int channels;
+    bool is_float;
+  };
+  struct CpuBuffer {
+    std::vector<char> data;
+  };
+
+  std::vector<CpuTexture> cpu_textures_;
+  std::vector<CpuBuffer> cpu_buffers_;
 };
 
 #endif  // THIRD_PARTY_ODML_LITERT_LITERT_SAMPLES_ASYNC_SEGMENTATION_IMAGE_PROCESSOR_H_

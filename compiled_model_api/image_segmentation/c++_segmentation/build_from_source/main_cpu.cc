@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include <GLES2/gl2.h>
+#include "compiled_model_api/image_segmentation/c++_segmentation/build_from_source/gl_compat.h"
 #include "absl/time/clock.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/c/litert_common.h"

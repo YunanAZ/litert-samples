@@ -23,9 +23,10 @@
 #include <string>
 #include <vector>
 
-#include <GLES3/gl32.h>
+#include "compiled_model_api/image_segmentation/c++_segmentation/build_from_source/gl_compat.h"
 #include "absl/log/absl_check.h"  // from @com_google_absl
 
+#if LITERT_USE_OPENGL
 namespace {
 
 void GlCheckErrorDetail(const char* file, int line,
@@ -865,3 +866,224 @@ void ImageProcessor::CleanupGLResources() {
   }
   GlCheckErrorOp("CleanupGLResources");
 }
+#endif // LITERT_USE_OPENGL
+
+#if !LITERT_USE_OPENGL
+
+#include <algorithm>
+#include <iostream>
+
+ImageProcessor::ImageProcessor() = default;
+ImageProcessor::~ImageProcessor() = default;
+
+bool ImageProcessor::InitializeGL(
+    const std::string&,
+    const std::string&,
+    const std::string&,
+    const std::string&,
+    const std::string&) {
+  std::cout << "ImageProcessor: CPU Fallback Initialized (No OpenGL)" << std::endl;
+  return true;
+}
+
+void ImageProcessor::ShutdownGL() {}
+
+GLuint ImageProcessor::CreateOpenGLTexture(const unsigned char* image_data,
+                                           int width, int height,
+                                           int channels) {
+  CpuTexture tex;
+  tex.data_uchar.assign(image_data, image_data + width * height * channels);
+  tex.width = width;
+  tex.height = height;
+  tex.channels = channels;
+  tex.is_float = false;
+  cpu_textures_.push_back(tex);
+  return cpu_textures_.size();
+}
+
+GLuint ImageProcessor::CreateOpenGLTexture(const float* image_data, int width,
+                                           int height, int channels) {
+  CpuTexture tex;
+  tex.data_float.assign(image_data, image_data + width * height * channels);
+  tex.width = width;
+  tex.height = height;
+  tex.channels = channels;
+  tex.is_float = true;
+  cpu_textures_.push_back(tex);
+  return cpu_textures_.size();
+}
+
+void ImageProcessor::DeleteOpenGLTexture(GLuint texture_id) {
+  // Stubs
+}
+
+GLuint ImageProcessor::CreateOpenGLBuffer(const void* data, size_t data_size,
+                                          GLenum usage) {
+  CpuBuffer buf;
+  buf.data.resize(data_size);
+  if (data) {
+    memcpy(buf.data.data(), data, data_size);
+  }
+  cpu_buffers_.push_back(buf);
+  return cpu_buffers_.size(); // ID is index + 1
+}
+
+void ImageProcessor::DeleteOpenGLBuffer(GLuint buffer_id) {
+  // Stubs
+}
+
+bool ImageProcessor::PreprocessInputForSegmentation(
+    GLuint input_tex_id, int input_width, int input_height, int output_width,
+    int output_height, GLuint preprocessed_buffer_id, int num_channels) {
+  if (input_tex_id == 0 || input_tex_id > cpu_textures_.size() || preprocessed_buffer_id == 0 ||
+      preprocessed_buffer_id > cpu_buffers_.size()) {
+    return false;
+  }
+  const auto& tex = cpu_textures_[input_tex_id - 1];
+  auto& buf = cpu_buffers_[preprocessed_buffer_id - 1];
+
+  if (tex.is_float) return false; // Expecting uchar input texture
+
+  buf.data.resize(output_width * output_height * num_channels * sizeof(float));
+  float* dst = reinterpret_cast<float*>(buf.data.data());
+
+  float x_ratio = (float)(input_width - 1) / output_width;
+  float y_ratio = (float)(input_height - 1) / output_height;
+
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      int x_l = (int)(x_ratio * x);
+      int x_h = std::min((int)ceil(x_ratio * x), input_width - 1);
+      int y_l = (int)(y_ratio * y);
+      int y_h = std::min((int)ceil(y_ratio * y), input_height - 1);
+      float x_weight = (x_ratio * x) - x_l;
+      float y_weight = (y_ratio * y) - y_l;
+
+      for (int c = 0; c < 3; c++) {
+        float a = tex.data_uchar[(y_l * input_width + x_l) * tex.channels + c];
+        float b = tex.data_uchar[(y_l * input_width + x_h) * tex.channels + c];
+        float d = tex.data_uchar[(y_h * input_width + x_l) * tex.channels + c];
+        float e = tex.data_uchar[(y_h * input_width + x_h) * tex.channels + c];
+        float pixel = a * (1 - x_weight) * (1 - y_weight) +
+                      b * x_weight * (1 - y_weight) +
+                      d * (y_weight) * (1 - x_weight) +
+                      e * x_weight * y_weight;
+        dst[(y * output_width + x) * num_channels + c] =
+            (pixel / 255.0f) * 2.0f - 1.0f;
+      }
+      if (num_channels == 4) {
+        dst[(y * output_width + x) * num_channels + 3] = 0.0f;
+      }
+    }
+  }
+  return true;
+}
+
+bool ImageProcessor::ReadBufferData(GLuint buffer_id, size_t offset,
+                                    size_t data_size, void* out_data) {
+  if (buffer_id == 0 || buffer_id > cpu_buffers_.size()) return false;
+  const auto& buf = cpu_buffers_[buffer_id - 1];
+  if (offset + data_size > buf.data.size()) return false;
+  memcpy(out_data, buf.data.data() + offset, data_size);
+  return true;
+}
+
+bool ImageProcessor::DeinterleaveMasksCpu(
+    float* data, int mask_width, int mask_height,
+    std::vector<GLuint>& output_buffer_ids) {
+  for (int i = 0; i < 6; ++i) {
+    GLuint buf_id = output_buffer_ids[i];
+    if (buf_id == 0 || buf_id > cpu_buffers_.size()) return false;
+    auto& buf = cpu_buffers_[buf_id - 1];
+    buf.data.resize(mask_width * mask_height * sizeof(float));
+    float* dst = reinterpret_cast<float*>(buf.data.data());
+
+    for (int y = 0; y < mask_height; ++y) {
+      for (int x = 0; x < mask_width; ++x) {
+        dst[y * mask_width + x] = data[y * mask_width * 6 + x * 6 + i];
+      }
+    }
+  }
+  return true;
+}
+
+GLuint ImageProcessor::ApplyColoredMasks(
+    GLuint original_image_tex_id, int original_width, int original_height,
+    const std::vector<GLuint>& mask_buffer_ids,
+    const std::vector<RGBAColor>& mask_colors, int& out_width,
+    int& out_height) {
+  if (original_image_tex_id == 0 || original_image_tex_id > cpu_textures_.size()) return 0;
+  const auto& tex = cpu_textures_[original_image_tex_id - 1];
+
+  out_width = original_width;
+  out_height = original_height;
+
+  CpuBuffer out_buf;
+  out_buf.data.resize(out_width * out_height * 4 * sizeof(float));
+  float* dst = reinterpret_cast<float*>(out_buf.data.data());
+
+  int mask_width = 256;
+  int mask_height = 256;
+
+  for (int y = 0; y < out_height; ++y) {
+    for (int x = 0; x < out_width; ++x) {
+      float tex_coord_x = (float)x / (float)(out_width - 1);
+      float tex_coord_y = (float)y / (float)(out_height - 1);
+
+      float base_r = 0, base_g = 0, base_b = 0, base_a = 1.0f;
+      int src_x = std::clamp((int)(tex_coord_x * (tex.width - 1)), 0, tex.width - 1);
+      int src_y = std::clamp((int)(tex_coord_y * (tex.height - 1)), 0, tex.height - 1);
+      int src_idx = (src_y * tex.width + src_x) * tex.channels;
+      base_r = tex.data_uchar[src_idx + 0] / 255.0f;
+      base_g = tex.data_uchar[src_idx + 1] / 255.0f;
+      base_b = tex.data_uchar[src_idx + 2] / 255.0f;
+      if (tex.channels == 4) {
+        base_a = tex.data_uchar[src_idx + 3] / 255.0f;
+      }
+
+      float r = base_r, g = base_g, b = base_b, a = base_a;
+
+      int mask_x = std::clamp((int)(tex_coord_x * (mask_width - 1)), 0, mask_width - 1);
+      int mask_y = std::clamp((int)(tex_coord_y * (mask_height - 1)), 0, mask_height - 1);
+      int mask_idx = mask_y * mask_width + mask_x;
+
+      for (int i = 0; i < 6; ++i) {
+        GLuint mask_buf_id = mask_buffer_ids[i];
+        if (mask_buf_id == 0 || mask_buf_id > cpu_buffers_.size()) return 0;
+        const auto& mask_buf = cpu_buffers_[mask_buf_id - 1];
+        const float* mask_data =
+            reinterpret_cast<const float*>(mask_buf.data.data());
+        float mask_val = mask_data[mask_idx];
+
+        if (mask_val > 0.5f) {
+          float blend_alpha = mask_colors[i].a * mask_val;
+          r = r * (1.0f - blend_alpha) + mask_colors[i].r * blend_alpha;
+          g = g * (1.0f - blend_alpha) + mask_colors[i].g * blend_alpha;
+          b = b * (1.0f - blend_alpha) + mask_colors[i].b * blend_alpha;
+        }
+      }
+
+      int dst_idx = (y * out_width + x) * 4;
+      dst[dst_idx + 0] = r;
+      dst[dst_idx + 1] = g;
+      dst[dst_idx + 2] = b;
+      dst[dst_idx + 3] = a;
+    }
+  }
+
+  cpu_buffers_.push_back(out_buf);
+  return cpu_buffers_.size();
+}
+
+bool ImageProcessor::ReadTexturePixels(GLuint, int, int, void*, GLenum,
+                                       GLenum) {
+  return false;
+}
+GLuint ImageProcessor::ResizeTextureOpenGL(GLuint, int, int, int, int) {
+  return 0;
+}
+bool ImageProcessor::DeinterleaveMasks(GLuint, std::vector<GLuint>&) {
+  return false;
+}
+
+#endif // !LITERT_USE_OPENGL
